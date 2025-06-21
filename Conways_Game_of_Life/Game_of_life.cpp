@@ -1,7 +1,7 @@
 // Conway's Game of Life Implementation
-// Authors: [Your Names]
-// Date: [Current Date]
-// Description: A cellular automaton simulation with multiple game modes and win conditions
+// Authors: Mufunde Emmanuel-100001936, George Kilibwa - 100002624, Riad Al Zaim- 100003048
+// Date: 19/06/2025 (1725)
+// Description: A cellular automaton simulation with automatic win condition detection
 
 #include <iostream>
 #include <vector>
@@ -11,6 +11,7 @@
 #include <fstream>
 #include <string>
 #include <limits>
+#include <map>
 using namespace std;
 
 // Game configuration constants
@@ -19,18 +20,45 @@ const int DEFAULT_COLS = 40;
 const int MAX_GENERATIONS = 1000;
 const int DISPLAY_DELAY_MS = 500;
 
-// Game states
-enum class GameMode {
-    STABILITY_GOAL,
-    SURVIVAL_GOAL,
-    PATTERN_CREATION,
-    POPULATION_TARGET,
-    TIME_ATTACK
+// Win condition tracking
+struct WinCondition {
+    bool achieved = false;
+    int generation = 0;
+    string description;
+};
+
+struct GameStats {
+    int generation = 0;
+    int liveCells = 0;
+    int maxLiveCells = 0;
+    int minLiveCells = 0;
+    int stabilityCount = 0;
+    int populationInRangeCount = 0;
+    bool hasOscillated = false;
+    vector<int> populationHistory;
+    
+    // Win conditions
+    map<string, WinCondition> winConditions;
+    
+    GameStats() {
+        // Initialize all possible win conditions
+        winConditions["stability"] = {false, 0, "Stability Goal - Reached a stable configuration"};
+        winConditions["survival_10"] = {false, 0, "Survival Goal - Kept cells alive for 10 generations"};
+        winConditions["survival_25"] = {false, 0, "Survival Goal - Kept cells alive for 25 generations"};
+        winConditions["survival_50"] = {false, 0, "Survival Goal - Kept cells alive for 50 generations"};
+        winConditions["survival_100"] = {false, 0, "Survival Goal - Kept cells alive for 100 generations"};
+        winConditions["population_balance"] = {false, 0, "Population Target - Maintained balanced population (20-30) for 20 generations"};
+        winConditions["glider_pattern"] = {false, 0, "Pattern Creation - Created a glider pattern"};
+        winConditions["blinker_pattern"] = {false, 0, "Pattern Creation - Created a blinker pattern"};
+        winConditions["block_pattern"] = {false, 0, "Pattern Creation - Created a block pattern"};
+        winConditions["time_attack_100"] = {false, 0, "Time Attack - Survived 100+ generations"};
+        winConditions["time_attack_500"] = {false, 0, "Time Attack - Survived 500+ generations"};
+    }
 };
 
 // Function declarations
 void initializeGrid(vector<vector<bool>>& grid, int rows, int cols);
-void displayGrid(const vector<vector<bool>>& grid, int generation, int liveCells);
+void displayGrid(const vector<vector<bool>>& grid, const GameStats& stats);
 void randomFill(vector<vector<bool>>& grid, double density = 0.3);
 void manualSetup(vector<vector<bool>>& grid);
 int countLiveNeighbors(const vector<vector<bool>>& grid, int row, int col, int rows, int cols);
@@ -39,13 +67,15 @@ void saveGrid(const vector<vector<bool>>& grid, const string& filename);
 bool loadGrid(vector<vector<bool>>& grid, const string& filename);
 int countLiveCells(const vector<vector<bool>>& grid);
 bool isStable(const vector<vector<bool>>& current, const vector<vector<bool>>& previous);
-bool checkPattern(const vector<vector<bool>>& grid, const vector<vector<bool>>& pattern);
-void runSimulation(vector<vector<bool>>& grid, int rows, int cols, GameMode mode, int targetGenerations);
+bool detectPatterns(const vector<vector<bool>>& grid, GameStats& stats);
+void updateGameStats(vector<vector<bool>>& grid, vector<vector<bool>>& previousGrid, GameStats& stats);
+void checkWinConditions(GameStats& stats);
+void showWinSummary(const GameStats& stats);
+void runAutoDetectSimulation(vector<vector<bool>>& grid, int rows, int cols);
 void showMenu();
-void showGameModes();
 
 int main() {
-    cout << "=== Conway's Game of Life ===\n\n";
+    cout << "=== Conway's Game of Life - Auto-Detect Mode ===\n\n";
     
     int rows, cols;
     cout << "Enter grid dimensions (rows columns): ";
@@ -76,48 +106,7 @@ int main() {
                 manualSetup(grid);
                 break;
             case '3':
-                showGameModes();
-                int gameModeChoice;
-                cin >> gameModeChoice;
-                
-                GameMode mode;
-                int targetGenerations;
-                
-                switch (gameModeChoice) {
-                    case 1:
-                        mode = GameMode::STABILITY_GOAL;
-                        cout << "Enter target generations for stability: ";
-                        cin >> targetGenerations;
-                        break;
-                    case 2:
-                        mode = GameMode::SURVIVAL_GOAL;
-                        cout << "Enter generations to survive: ";
-                        cin >> targetGenerations;
-                        break;
-                    case 3:
-                        mode = GameMode::PATTERN_CREATION;
-                        targetGenerations = 50;
-                        cout << "Pattern creation mode - create a glider pattern!\n";
-                        break;
-                    case 4:
-                        mode = GameMode::POPULATION_TARGET;
-                        cout << "Enter target population range (min max): ";
-                        int minPop, maxPop;
-                        cin >> minPop >> maxPop;
-                        targetGenerations = 100;
-                        break;
-                    case 5:
-                        mode = GameMode::TIME_ATTACK;
-                        targetGenerations = MAX_GENERATIONS;
-                        cout << "Time attack mode - survive as long as possible!\n";
-                        break;
-                    default:
-                        cout << "Invalid choice. Using survival mode.\n";
-                        mode = GameMode::SURVIVAL_GOAL;
-                        targetGenerations = 50;
-                }
-                
-                runSimulation(grid, rows, cols, mode, targetGenerations);
+                runAutoDetectSimulation(grid, rows, cols);
                 break;
             case '4':
                 {
@@ -147,7 +136,9 @@ int main() {
         }
         
         if (choice != '6') {
-            displayGrid(grid, 0, countLiveCells(grid));
+            GameStats tempStats;
+            tempStats.liveCells = countLiveCells(grid);
+            displayGrid(grid, tempStats);
         }
         
     } while (choice != '6');
@@ -155,16 +146,259 @@ int main() {
     return 0;
 }
 
+void runAutoDetectSimulation(vector<vector<bool>>& grid, int rows, int cols) {
+    vector<vector<bool>> nextGrid(rows, vector<bool>(cols, false));
+    vector<vector<bool>> previousGrid(rows, vector<bool>(cols, false));
+    
+    GameStats stats;
+    stats.liveCells = countLiveCells(grid);
+    stats.maxLiveCells = stats.liveCells;
+    stats.minLiveCells = stats.liveCells;
+    
+    cout << "Starting Auto-Detect Simulation...\n";
+    cout << "The game will automatically detect when you achieve any win condition!\n\n";
+    cout << "Press Enter to step through, or 'a' for auto-run: ";
+    char stepChoice;
+    cin >> stepChoice;
+    bool autoRun = (stepChoice == 'a' || stepChoice == 'A');
+    
+    bool gameEnded = false;
+    
+    while (stats.generation < MAX_GENERATIONS && !gameEnded) {
+        displayGrid(grid, stats);
+        
+        // Check for game end conditions
+        if (stats.liveCells == 0) {
+            cout << "💀 GAME OVER! All cells died at generation " << stats.generation << "!\n";
+            gameEnded = true;
+            break;
+        }
+        
+        // Update game statistics
+        updateGameStats(grid, previousGrid, stats);
+        
+        // Check for win conditions
+        checkWinConditions(stats);
+        
+        // Check if any win condition was achieved
+        bool anyWin = false;
+        for (const auto& win : stats.winConditions) {
+            if (win.second.achieved) {
+                anyWin = true;
+                break;
+            }
+        }
+        
+        if (anyWin) {
+            showWinSummary(stats);
+            gameEnded = true;
+            break;
+        }
+        
+        // Store current state for stability check
+        previousGrid = grid;
+        
+        // Evolve to next generation
+        evolveGrid(grid, nextGrid, rows, cols);
+        stats.generation++;
+        stats.liveCells = countLiveCells(grid);
+        
+        // Update population history
+        stats.populationHistory.push_back(stats.liveCells);
+        if (stats.populationHistory.size() > 100) {
+            stats.populationHistory.erase(stats.populationHistory.begin());
+        }
+        
+        if (!autoRun) {
+            cout << "Press Enter for next generation, 'q' to quit: ";
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
+            char input = cin.get();
+            if (input == 'q' || input == 'Q') break;
+        } else {
+            this_thread::sleep_for(chrono::milliseconds(DISPLAY_DELAY_MS));
+        }
+    }
+    
+    if (!gameEnded) {
+        cout << "Simulation completed after " << stats.generation << " generations.\n";
+        showWinSummary(stats);
+    }
+    
+    cout << "Press Enter to continue...";
+    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+    cin.get();
+}
+
+void updateGameStats(vector<vector<bool>>& grid, vector<vector<bool>>& previousGrid, GameStats& stats) {
+    // Update max/min live cells
+    if (stats.liveCells > stats.maxLiveCells) {
+        stats.maxLiveCells = stats.liveCells;
+    }
+    if (stats.liveCells < stats.minLiveCells) {
+        stats.minLiveCells = stats.liveCells;
+    }
+    
+    // Check for stability
+    if (stats.generation > 0 && isStable(grid, previousGrid)) {
+        stats.stabilityCount++;
+    } else {
+        stats.stabilityCount = 0;
+    }
+    
+    // Check for population in target range
+    if (stats.liveCells >= 20 && stats.liveCells <= 30) {
+        stats.populationInRangeCount++;
+    } else {
+        stats.populationInRangeCount = 0;
+    }
+    
+    // Detect patterns
+    detectPatterns(grid, stats);
+}
+
+void checkWinConditions(GameStats& stats) {
+    // Stability Goal
+    if (stats.stabilityCount >= 3 && !stats.winConditions["stability"].achieved) {
+        stats.winConditions["stability"].achieved = true;
+        stats.winConditions["stability"].generation = stats.generation;
+    }
+    
+    // Survival Goals
+    if (stats.generation >= 10 && !stats.winConditions["survival_10"].achieved) {
+        stats.winConditions["survival_10"].achieved = true;
+        stats.winConditions["survival_10"].generation = stats.generation;
+    }
+    if (stats.generation >= 25 && !stats.winConditions["survival_25"].achieved) {
+        stats.winConditions["survival_25"].achieved = true;
+        stats.winConditions["survival_25"].generation = stats.generation;
+    }
+    if (stats.generation >= 50 && !stats.winConditions["survival_50"].achieved) {
+        stats.winConditions["survival_50"].achieved = true;
+        stats.winConditions["survival_50"].generation = stats.generation;
+    }
+    if (stats.generation >= 100 && !stats.winConditions["survival_100"].achieved) {
+        stats.winConditions["survival_100"].achieved = true;
+        stats.winConditions["survival_100"].generation = stats.generation;
+    }
+    
+    // Population Target
+    if (stats.populationInRangeCount >= 20 && !stats.winConditions["population_balance"].achieved) {
+        stats.winConditions["population_balance"].achieved = true;
+        stats.winConditions["population_balance"].generation = stats.generation;
+    }
+    
+    // Time Attack
+    if (stats.generation >= 100 && !stats.winConditions["time_attack_100"].achieved) {
+        stats.winConditions["time_attack_100"].achieved = true; 
+        stats.winConditions["time_attack_100"].generation = stats.generation;
+    }
+    if (stats.generation >= 500 && !stats.winConditions["time_attack_500"].achieved) {
+        stats.winConditions["time_attack_500"].achieved = true;
+        stats.winConditions["time_attack_500"].generation = stats.generation;
+    }
+}
+
+bool detectPatterns(const vector<vector<bool>>& grid, GameStats& stats) {
+    int rows = grid.size();
+    int cols = grid[0].size();
+    
+    // Check for glider pattern (simplified detection)
+    for (int i = 0; i < rows - 2; i++) {
+        for (int j = 0; j < cols - 2; j++) {
+            // Simple glider detection (5 cells in specific pattern)
+            int liveCount = 0;
+            if (grid[i][j+1]) liveCount++;
+            if (grid[i+1][j+2]) liveCount++;
+            if (grid[i+2][j]) liveCount++;
+            if (grid[i+2][j+1]) liveCount++;
+            if (grid[i+2][j+2]) liveCount++;
+            
+            if (liveCount == 5 && !stats.winConditions["glider_pattern"].achieved) {
+                stats.winConditions["glider_pattern"].achieved = true;
+                stats.winConditions["glider_pattern"].generation = stats.generation;
+                return true;
+            }
+        }
+    }
+    
+    // Check for blinker pattern (3 cells in a row or column)
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols - 2; j++) {
+            if (grid[i][j] && grid[i][j+1] && grid[i][j+2] && 
+                !grid[i][j-1] && !grid[i][j+3]) {
+                if (!stats.winConditions["blinker_pattern"].achieved) {
+                    stats.winConditions["blinker_pattern"].achieved = true;
+                    stats.winConditions["blinker_pattern"].generation = stats.generation;
+                    return true;
+                }
+            }
+        }
+    }
+    
+    // Check for block pattern (2x2 square)
+    for (int i = 0; i < rows - 1; i++) {
+        for (int j = 0; j < cols - 1; j++) {
+            if (grid[i][j] && grid[i][j+1] && grid[i+1][j] && grid[i+1][j+1]) {
+                if (!stats.winConditions["block_pattern"].achieved) {
+                    stats.winConditions["block_pattern"].achieved = true;
+                    stats.winConditions["block_pattern"].generation = stats.generation;
+                    return true;
+                }
+            }
+        }
+    }
+    
+    return false;
+}
+
+void showWinSummary(const GameStats& stats) {
+    cout << "\n🎉 WIN CONDITION SUMMARY 🎉\n";
+    cout << "=============================\n";
+    
+    bool anyWin = false;
+    for (const auto& win : stats.winConditions) {
+        if (win.second.achieved) {
+            cout << "✅ " << win.second.description;
+            cout << " (Generation " << win.second.generation << ")\n";
+            anyWin = true;
+        }
+    }
+    
+    if (!anyWin) {
+        cout << "No win conditions achieved yet.\n";
+    }
+    
+    cout << "\n📊 Final Statistics:\n";
+    cout << "Total Generations: " << stats.generation << "\n";
+    cout << "Final Live Cells: " << stats.liveCells << "\n";
+    cout << "Max Live Cells: " << stats.maxLiveCells << "\n";
+    cout << "Min Live Cells: " << stats.minLiveCells << "\n";
+    cout << "=============================\n";
+}
+
 void initializeGrid(vector<vector<bool>>& grid, int rows, int cols) {
     // Grid is already initialized with false values
     cout << "Grid initialized with " << rows << "x" << cols << " dimensions.\n";
 }
 
-void displayGrid(const vector<vector<bool>>& grid, int generation, int liveCells) {
+void displayGrid(const vector<vector<bool>>& grid, const GameStats& stats) {
     system("cls"); // Clear screen (Windows)
     
-    cout << "=== Conway's Game of Life ===\n";
-    cout << "Generation: " << generation << " | Live Cells: " << liveCells << "\n\n";
+    cout << "=== Conway's Game of Life - Auto-Detect Mode ===\n";
+    cout << "Generation: " << stats.generation << " | Live Cells: " << stats.liveCells << "\n";
+    cout << "Max/Min Population: " << stats.maxLiveCells << "/" << stats.minLiveCells << "\n";
+    
+    // Show active win conditions
+    cout << "Active Win Conditions: ";
+    bool anyActive = false;
+    for (const auto& win : stats.winConditions) {
+        if (win.second.achieved) {
+            cout << "✅ ";
+            anyActive = true;
+        }
+    }
+    if (!anyActive) cout << "None yet";
+    cout << "\n\n";
     
     // Print column numbers
     cout << "   ";
@@ -335,112 +569,13 @@ bool isStable(const vector<vector<bool>>& current, const vector<vector<bool>>& p
     return true;
 }
 
-void runSimulation(vector<vector<bool>>& grid, int rows, int cols, GameMode mode, int targetGenerations) {
-    vector<vector<bool>> nextGrid(rows, vector<bool>(cols, false));
-    vector<vector<bool>> previousGrid(rows, vector<bool>(cols, false));
-    
-    int generation = 0;
-    int liveCells = countLiveCells(grid);
-    bool gameWon = false;
-    bool gameLost = false;
-    
-    cout << "Starting simulation...\n";
-    cout << "Press Enter to step through, or 'a' for auto-run: ";
-    char stepChoice;
-    cin >> stepChoice;
-    bool autoRun = (stepChoice == 'a' || stepChoice == 'A');
-    
-    while (generation < targetGenerations && !gameWon && !gameLost) {
-        displayGrid(grid, generation, liveCells);
-        
-        // Check win/lose conditions based on game mode
-        switch (mode) {
-            case GameMode::STABILITY_GOAL:
-                if (generation > 0 && isStable(grid, previousGrid)) {
-                    gameWon = true;
-                    cout << "🎉 WIN! Stability achieved at generation " << generation << "!\n";
-                }
-                break;
-                
-            case GameMode::SURVIVAL_GOAL:
-                if (liveCells == 0) {
-                    gameLost = true;
-                    cout << "💀 LOSE! All cells died at generation " << generation << "!\n";
-                } else if (generation >= targetGenerations - 1) {
-                    gameWon = true;
-                    cout << "🎉 WIN! Survived " << targetGenerations << " generations!\n";
-                }
-                break;
-                
-            case GameMode::POPULATION_TARGET:
-                if (liveCells >= 20 && liveCells <= 30) {
-                    if (generation >= targetGenerations - 1) {
-                        gameWon = true;
-                        cout << "🎉 WIN! Maintained target population for " << targetGenerations << " generations!\n";
-                    }
-                } else if (liveCells == 0) {
-                    gameLost = true;
-                    cout << "💀 LOSE! All cells died!\n";
-                }
-                break;
-                
-            case GameMode::TIME_ATTACK:
-                if (liveCells == 0) {
-                    gameLost = true;
-                    cout << "💀 GAME OVER! Survived " << generation << " generations!\n";
-                }
-                break;
-                
-            default:
-                break;
-        }
-        
-        if (gameWon || gameLost) break;
-        
-        // Store current state for stability check
-        previousGrid = grid;
-        
-        // Evolve to next generation
-        evolveGrid(grid, nextGrid, rows, cols);
-        generation++;
-        liveCells = countLiveCells(grid);
-        
-        if (!autoRun) {
-            cout << "Press Enter for next generation, 'q' to quit: ";
-            cin.ignore(numeric_limits<streamsize>::max(), '\n');
-            char input = cin.get();
-            if (input == 'q' || input == 'Q') break;
-        } else {
-            this_thread::sleep_for(chrono::milliseconds(DISPLAY_DELAY_MS));
-        }
-    }
-    
-    if (!gameWon && !gameLost) {
-        cout << "Simulation completed after " << generation << " generations.\n";
-    }
-    
-    cout << "Press Enter to continue...";
-    cin.ignore(numeric_limits<streamsize>::max(), '\n');
-    cin.get();
-}
-
 void showMenu() {
     cout << "\n=== Main Menu ===\n";
     cout << "1. Random fill grid\n";
     cout << "2. Manual setup\n";
-    cout << "3. Run simulation\n";
+    cout << "3. Run auto-detect simulation\n";
     cout << "4. Save grid\n";
     cout << "5. Load grid\n";
     cout << "6. Exit\n";
     cout << "Enter your choice: ";
-}
-
-void showGameModes() {
-    cout << "\n=== Game Modes ===\n";
-    cout << "1. Stability Goal - Reach a stable configuration\n";
-    cout << "2. Survival Goal - Keep cells alive for N generations\n";
-    cout << "3. Pattern Creation - Create specific patterns\n";
-    cout << "4. Population Target - Maintain population in range\n";
-    cout << "5. Time Attack - Survive as long as possible\n";
-    cout << "Enter game mode: ";
 }
